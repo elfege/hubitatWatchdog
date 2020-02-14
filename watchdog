@@ -1,0 +1,287 @@
+definition(
+    name: "WATCHDOG",
+    namespace: "elfege",
+    author: "ELFEGE",
+
+    description: "Check that cron service is running properly and, if not, then reboot the hub",
+
+    category: "maintenance",
+    iconUrl: "https://www.philonyc.com/assets/penrose.jpg",
+    iconX2Url: "https://www.philonyc.com/assets/penrose.jpg", 
+    image: "https://www.philonyc.com/assets/penrose.jpg"
+)
+
+preferences {
+    page name: "pageConfig"
+}
+
+def pageConfig() {
+
+    if(state.paused)
+    {
+        log.debug "new app label: ${app.label}"
+        while(app.label.contains(" (Paused) "))
+        {
+            app.updateLabel(app.label.minus("(Paused)" ))
+        }
+        app.updateLabel(app.label + ("<font color = 'red'> (Paused) </font>" ))
+    }
+    else if(app.label.contains("(Paused)"))
+    {
+        app.updateLabel(app.label.minus("<font color = 'red'> (Paused) </font>" ))
+        while(app.label.contains(" (Paused) "))       
+        {
+            app.updateLabel(app.label.minus("(Paused)" ))
+        }
+        log.debug "new app label: ${app.label}"
+    }
+
+
+    def pageProperties = [
+        name:       "pageConfig",
+        title:      "$app.label",
+        nextPage:   null,
+        install: true,
+        uninstall: true,
+        submitOnChange:true
+    ]
+
+    dynamicPage(pageProperties) {
+
+        if(state.paused == true)
+        {
+            state.button_name = "resume"
+            logging("button name is: $state.button_name")
+        }
+        else 
+        {
+            state.button_name = "pause"
+            logging("button name is: $state.button_name")
+        }
+
+
+        section("")
+        {
+            input "pause", "button", title: "$state.button_name"
+        }
+        section("restricted modes")
+        {
+            input "restricted", "mode", title: "Do not run this app when in these modes:", description:"select modes", multiple:true, required:false
+        }
+        section([title:"Options"]) {
+            label title:"Assign a name", required:false
+        }
+
+        section("Select motion sensors to trigger watchdog events")
+        { 
+            input "motionSensors", "capability.motionSensor", title: "Choose your motion sensors", despcription: "pick a motion sensor", required:true,
+                multiple:true, submitOnChange: true
+            input "ip", "text", title: "IP ADDRESS OF YOUR HUB", despcription: "enter your ip address without 'http://'", required:true
+        }
+
+        section("logging")
+        {
+            input "enablelogging", "bool", title:"Enable logging", value:false, submitOnChange:true
+        }
+        section()
+        {
+            if(state.installed)
+            {
+                input "update", "button", title: "UPDATE"
+                input "test", "button", title: "test", submitOnChange: true
+                if(state.confirm)
+                {
+                    paragraph "WARNING! THIS WILL ACTUALLY REBOOT YOUR HUB! Are you sure?"
+                    input "YES", "button", title: "YES", submitOnChange: true
+                    input "CANCEL", "button", title: "NO", submitOnChange: true
+                }
+            }
+        }
+    }
+}
+
+def appButtonHandler(btn) {
+    switch(btn) {
+        case "pause":state.paused = !state.paused
+        log.debug "state.paused = $state.paused"
+        if(state.paused)
+        {
+            log.debug "unscheduling all tasks..."
+            unschedule()
+            log.debug "unsuscribing from events..."
+            unsubscribe()         
+            break
+        }
+        else
+        {
+            updated()            
+            break
+        }
+        case "update":
+        state.paused = false
+        updated()
+        break
+        case "test":
+        state.confirm = true
+        break
+        case "YES":
+        runIn(3, reboot)
+        state.confirm = false
+        break
+        case "CANCEL":
+        state.confirm = false
+        break
+
+    }
+}
+
+def initialize() {
+    if(enablelogging == true){
+        state.EnableDebugTime = now()
+        runIn(1800, disablelogging)
+        log.info "disablelogging scheduled to run in ${1800/60} minutes"
+    }
+    else 
+    {
+        log.warn "debug logging disabled!"
+    }
+
+    int i = 0
+    int s = 0
+
+    i = 0
+    s = motionSensors.size()
+    for(s!=0;i<s;i++)
+    {
+        subscribe(motionSensors[i], "motion", mainHandler)
+        log.trace "${motionSensors[i]} subscribed to events"
+    }
+
+
+
+    subscribe(location, "systemStart", hubEventHandler) // manage bugs and hub crashes
+
+    state.timer = 1
+    schedule("0 0/${state.timer} * * * ?", master) 
+    state.lastRun = now() as long // time stamp to see if cron service is working properly
+        logging("initialization done")
+    //master()
+}
+
+
+def installed() {
+    logging("Installed with settings: ${settings}")
+    state.fix = 0
+    state.lastReboot = now()
+    state.installed = true
+    initialize()
+}
+def updated() {
+    log.info "updated with settings: ${settings}"
+    
+    unsubscribe()
+    unschedule()
+    initialize()
+}
+
+def locationModeChangeHandler(evt)
+{
+    logging("$evt.name is now in $evt.value mode")   
+}
+
+def mainHandler(evt){
+
+    log.info "${evt.name}: $evt.device is $evt.value --------------------"
+
+    if(location.mode in restrictedModes)
+    {
+        logging("location in restricted mode, doing nothing")
+        return
+    }
+    else 
+    {
+        master()
+    }
+}
+
+def hubEventHandler(evt)
+{
+    log.warn "$evt.device $evt.name"
+    if(evt.name == "systemStart")
+    {
+        log.warn "reset state.lastReboot = now()"
+        state.lastReboot = now()
+        updated()
+    }
+}
+
+def master(){
+    log.info("**********${new Date().format("h:mm:ss a", location.timeZone)}****************")
+
+    if(location.mode in restrictedModes)
+    {
+        log.info("location in restricted mode, doing nothing")
+    }
+    else 
+    {
+        if(now() - state.lastRun > (state.timer * 60000) + 30000) // if this loop hasn't run for more than the timer's value, then it's probably that CRON is broken
+        {
+            log.warn "EXCESSIVE DELAY, HUB IS GETTING SLOW!"
+
+            if(now() - state.lastReboot > 15 * 60 * 1000)
+            {
+                log.warn "REBOOT REBOOT REBOOT" 
+                state.lastReboot = now()
+                runIn(2, reboot)
+            }
+            else 
+            {
+                log.warn "LAST REBOOT WAS NOT SO LONG AGO, SKIPPING"
+            }
+
+        }
+
+
+        if(enabledebug && now() - state.EnableDebugTime > 1800000)
+        {
+            log.info "Debug has been up for too long..."
+            disablelogging() 
+        }
+    }
+    state.lastRun = now() // time stamp to see if cron service is working properly
+}
+
+def reboot()
+{
+    log.warn "NOW REBOOTING THE HUB"
+    runCmd("${ip}", "8080", "/hub/reboot")// reboot
+}
+
+def runCmd(String ip,String port,String path) {
+
+    def uri = "http://${ip}${":"}${port}${path}"
+    log.debug "POST: $uri"
+
+    def reqParams = [
+        uri: uri
+    ]
+
+    try {
+        httpPost(reqParams){response ->
+        }
+    } catch (Exception e) {
+        log.error "${e}"
+    }
+}
+
+def logging(msg){
+    def debug = settings.find{it.key == "enablelogging"}?.value
+    //log.warn "debug = $debug"
+    if (debug) log.debug msg
+    if(debug && state.EnableDebugTime == null) state.EnableDebugTime = now()
+
+}
+def disablelogging(){
+    app.updateSetting("enablelogging",[value:"false",type:"bool"])
+    log.warn "logging disabled!"
+}
