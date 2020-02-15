@@ -135,6 +135,21 @@ def appButtonHandler(btn) {
     }
 }
 
+def installed() {
+    logging("Installed with settings: ${settings}")
+    state.fix = 0
+    state.lastReboot = now()
+    state.installed = true
+    initialize()
+}
+def updated() {
+    log.info "updated with settings: ${settings}"
+
+    unsubscribe()
+    unschedule()
+    initialize()
+}
+
 def initialize() {
     if(enablelogging == true){
         state.EnableDebugTime = now()
@@ -163,26 +178,12 @@ def initialize() {
 
     state.timer = 1
     schedule("0 0/${state.timer} * * * ?", master) 
-    state.lastRun = now() as long // time stamp to see if cron service is working properly
-        logging("initialization done")
+    state.lastRun = now()  // time stamp to see if cron service is working properly
+
+    logging("initialization done")
     //master()
 }
 
-
-def installed() {
-    logging("Installed with settings: ${settings}")
-    state.fix = 0
-    state.lastReboot = now()
-    state.installed = true
-    initialize()
-}
-def updated() {
-    log.info "updated with settings: ${settings}"
-    
-    unsubscribe()
-    unschedule()
-    initialize()
-}
 
 def locationModeChangeHandler(evt)
 {
@@ -206,13 +207,13 @@ def mainHandler(evt){
 
 def hubEventHandler(evt)
 {
-    log.warn "$evt.device $evt.name"
-    if(evt.name == "systemStart")
-    {
-        log.warn "reset state.lastReboot = now()"
-        state.lastReboot = now()
-        updated()
-    }
+
+    unscedule()
+    unsubscribe() // temporarily stop all instances to prevent loop reboots
+
+    log.warn "Hub has just restarted! ${app.label} will resume in 2 minutes..."
+    state.lastReboot = now()
+    runIn(120, updated) // restart this app 2 minutes after complete reboot
 }
 
 def master(){
