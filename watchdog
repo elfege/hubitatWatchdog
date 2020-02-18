@@ -1,3 +1,7 @@
+import java.text.SimpleDateFormat
+import groovy.transform.Field
+import groovy.json.JsonOutput
+
 definition(
     name: "WATCHDOG",
     namespace: "elfege",
@@ -13,28 +17,24 @@ definition(
 
 preferences {
     page name: "pageConfig"
+    page name: "connectPage"
 }
+mappings{
+    // Server Mappings
+    path("/ping")
+    {
+        action: [GET: "registerPing"]
+    }
+    path("/confirmReception")
+    {
+        action: [GET: "confirmationReceived"]
+    }
 
+}
 def pageConfig() {
 
-    if(state.paused)
-    {
-        log.debug "new app label: ${app.label}"
-        while(app.label.contains(" (Paused) "))
-        {
-            app.updateLabel(app.label.minus("(Paused)" ))
-        }
-        app.updateLabel(app.label + ("<font color = 'red'> (Paused) </font>" ))
-    }
-    else if(app.label.contains("(Paused)"))
-    {
-        app.updateLabel(app.label.minus("<font color = 'red'> (Paused) </font>" ))
-        while(app.label.contains(" (Paused) "))       
-        {
-            app.updateLabel(app.label.minus("(Paused)" ))
-        }
-        log.debug "new app label: ${app.label}"
-    }
+
+    appLabel()
 
 
     def pageProperties = [
@@ -47,6 +47,7 @@ def pageConfig() {
     ]
 
     dynamicPage(pageProperties) {
+
 
         if(state.paused == true)
         {
@@ -78,17 +79,30 @@ def pageConfig() {
                 multiple:true, submitOnChange: true
             input "ip", "text", title: "IP ADDRESS OF YOUR HUB", despcription: "enter your ip address without 'http://'", required:true
         }
+        section("REMOTE HUB")
+        {
+            input "workWithRemoteHub", "bool", title: "watch a remote hub on your network", defaultValue: false, submitOnChange: true
+            if(workWithRemoteHub)
+            {
+                href "connectPage", title: "get this server token key (server)", description: "", state: state.clientURI ? "complete" : null
+                input "serverKey", "string", title: "Paste the connection key you've got from the other hub's version of this app, here:", required: false
+            }
+        }
 
         section("logging")
         {
-            input "enablelogging", "bool", title:"Enable logging", value:false, submitOnChange:true
+            input "enablelogging", "bool", title:"Enable logging", defaultValue:false, submitOnChange:true
+            input "enabledescriptiontext", "bool", title:"Enable description text", defaultValue:true, submitOnChange:true
         }
         section()
         {
             if(state.installed)
             {
                 input "update", "button", title: "UPDATE"
-                input "test", "button", title: "test", submitOnChange: true
+                input "test", "button", title: "test"
+                input "run", "button", title: "RUN"
+                input "pingtest", "button", title: "PING TEST"
+
                 if(state.confirm)
                 {
                     paragraph "WARNING! THIS WILL ACTUALLY REBOOT YOUR HUB! Are you sure?"
@@ -99,7 +113,32 @@ def pageConfig() {
         }
     }
 }
+def connectPage(){
+    if (!state?.accessToken)
+    {
+        createAccessToken()
+    }
 
+    def connectString = getConnectString()
+    dynamicPage(name: "connectPage", uninstall: false, install: false)
+    {
+        section("Client Details")
+        {
+            input "clientName", "string", title: "Friendly Name of Client Hub:", required: false, defaultValue: null, submitOnChange: true
+            if (clientName) input "clientIP", "string", title: "Private LAN IP Address of Client Hub:", required: false, defaultValue: null, submitOnChange: true
+            if (clientIP) input "remoteType", "enum", title: "Type of Remote Hub:", options: [local: "Hubitat (LAN)", remote: "Hubitat (Internet)", homebridge: "HomeBridge", smartthings: "SmartThings"], required: false, defaultValue: null, submitOnChange: true
+            if (remoteType == "local" || remoteType == "homebridge") input "localConnectionType", "enum", title: "Local connect type:", options: [http: "Hubitat oAuth (http)", socket: "Hubitat Event Socket"], required: false, defaultValue: null, submitOnChange: true
+            if (clientIP && state.connectStatus == "online") input "updateDeviceIPs", "bool", title: "Update child devices with new IP address?", defaultValue: false
+        }
+        if (remoteType)
+        {
+            section("Connection Key")
+            {
+                paragraph("${remoteType == "local" || remoteType == "homebridge" ? "Local LAN Hub:" : "Internet Hub:"} Copy &amp; Paste this Connection Key into the Remote hub's configuration:<textarea rows=\"3\" style=\"width:80%; font-family:Consolas,Monaco,Lucida Console,Liberation Mono,DejaVu Sans Mono,Bitstream Vera Sans Mono,Courier New, monospace;\" onclick=\"this.select()\" onclick=\"this.focus()\">${connectString}</textarea>")
+            }
+        }
+    }
+}
 def appButtonHandler(btn) {
     switch(btn) {
         case "pause":state.paused = !state.paused
@@ -131,10 +170,15 @@ def appButtonHandler(btn) {
         case "CANCEL":
         state.confirm = false
         break
+        case "pingtest":
+        runIn(1, remoteServerHealth)
+        break
+        case "run":
+        master("testrun")
+        break
 
     }
 }
-
 def installed() {
     logging("Installed with settings: ${settings}")
     state.fix = 0
@@ -149,7 +193,6 @@ def updated() {
     unschedule()
     initialize()
 }
-
 def initialize() {
     if(enablelogging == true){
         state.EnableDebugTime = now()
@@ -172,27 +215,25 @@ def initialize() {
         log.trace "${motionSensors[i]} subscribed to events"
     }
 
-
+    configureRemote()
 
     subscribe(location, "systemStart", hubEventHandler) // manage bugs and hub crashes
 
+    state.remoteResponded = true
+    state.lastCheckIn = now()
+    state.rebootScheduled = false
+
     state.timer = 1
-    schedule("0 0/${state.timer} * * * ?", master) 
+    schedule("0 0/${state.timer} * * * ?", cronMaster) 
     state.lastRun = now()  // time stamp to see if cron service is working properly
 
     logging("initialization done")
-    //master()
 }
-
-
-def locationModeChangeHandler(evt)
-{
+def locationModeChangeHandler(evt){
     logging("$evt.name is now in $evt.value mode")   
 }
-
-def mainHandler(evt){
-
-    log.info "${evt.name}: $evt.device is $evt.value --------------------"
+def mainHandler(evt){    
+    //log.info "${evt.name}: $evt.device is $evt.value --------------------"
 
     if(location.mode in restrictedModes)
     {
@@ -201,23 +242,49 @@ def mainHandler(evt){
     }
     else 
     {
-        master()
+        master("mainHandler")
     }
 }
+def hubEventHandler(evt){
 
-def hubEventHandler(evt)
-{
-
-    unscedule()
+    unschedule()
     unsubscribe() // temporarily stop all instances to prevent loop reboots
 
     log.warn "Hub has just restarted! ${app.label} will resume in 2 minutes..."
     state.lastReboot = now()
     runIn(120, updated) // restart this app 2 minutes after complete reboot
 }
+def cronMaster(){
+    state.lastRun = now() // time stamp to see if cron service is working properly
+    state.lastRunStamp = new Date().format("h:mm:ss a", location.timeZone) // formated time stamp for debug purpose
+    master("cronMaster")
+}
+def master(String data){
+    if(data == "cronMaster")
+    {
+        descriptiontext("everything ok..")
+        if(state.rebootScheduled == true)
+        {
+            unschedule(reboot)
+            descriptiontext("reboot canceled!")
+            state.rebootScheduled = false
+        }
+    }
 
-def master(){
-    log.info("**********${new Date().format("h:mm:ss a", location.timeZone)}****************")
+    if(workWithRemoteHub)
+    {
+        if(now() - state.lastCheckIn > 10000)
+        {
+            state.lastCheckIn = now()
+            remoteServerHealth()
+            runIn(10, checkResult)
+        }
+        appLabel()
+
+    }
+
+             
+   descriptiontext("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
 
     if(location.mode in restrictedModes)
     {
@@ -225,19 +292,32 @@ def master(){
     }
     else 
     {
-        if(now() - state.lastRun > (state.timer * 60000) + 30000) // if this loop hasn't run for more than the timer's value, then it's probably that CRON is broken
+        long t = state.timer
+        long d = t * 60000 + 60000
+        if(now() - state.lastRun > d) // if this loop hasn't run for more than the timer's value, then it's probably that CRON is broken
         {
-            log.warn "EXCESSIVE DELAY, HUB IS GETTING SLOW!"
+             log.warn """CRON SERVICE DEAD!
+
+
+
+The current time is                     ${new Date().format("h:mm:ss a", location.timeZone)}
+last scheduled task was run at ${state.lastRunStamp}
+
+
+
+
+""" 
 
             if(now() - state.lastReboot > 15 * 60 * 1000)
             {
-                log.warn "REBOOT REBOOT REBOOT" 
-                state.lastReboot = now()
-                runIn(2, reboot)
+                log.warn "*******************REBOOT **************"
+                state.rebootScheduled = true
+                runIn(15, reboot)
             }
             else 
             {
                 log.warn "LAST REBOOT WAS NOT SO LONG AGO, SKIPPING"
+                state.rebootScheduled = false
             }
 
         }
@@ -249,15 +329,35 @@ def master(){
             disablelogging() 
         }
     }
-    state.lastRun = now() // time stamp to see if cron service is working properly
-}
 
-def reboot()
-{
+}
+def checkResult(){
+
+    if(state.hubResponded == false && state.firstAttempt == true)
+    {
+        log.warn "${clientName} failed to respond!"
+        state.firstAttempt = false
+        runIn(60, remoteServerHealth)
+    }
+    else if(state.hubResponded == false && state.firstAttempt == false)
+    {
+        rebootRemoteHub()
+    }
+    else if(state.hubResponded == true)
+    {
+        log.warn "${clientName} SCCESSFULLY RESPONDED!"
+        state.firstAttempt = true
+    }
+
+}
+def reboot(){
     log.warn "NOW REBOOTING THE HUB"
     runCmd("${ip}", "8080", "/hub/reboot")// reboot
 }
-
+def rebootRemoteHub(){
+    log.debug "REBOOTING ${clientName}"
+    runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
+}
 def runCmd(String ip,String port,String path) {
 
     def uri = "http://${ip}${":"}${port}${path}"
@@ -274,15 +374,145 @@ def runCmd(String ip,String port,String path) {
         log.error "${e}"
     }
 }
+def remoteServerHealth(){
+    state.hubResponded = false
+    sendGetCommand("/ping")
 
+}
+def registerPing(){
+    descriptiontext("Received ping from ${clientName}.")
+    runIn(2, sendConfirmation)
+
+    jsonResponse([status: "received"])
+}
+def sendConfirmation(){
+    sendGetCommand("/confirmReception")
+}
+def confirmationReceived(){
+    descriptiontext("${clientName} is online")
+    state.remoteResponded = true
+}
+def asyncHTTPHandler(response, data){
+    if (response?.status != 200)
+    {
+        log.error "asynchttpGet() request failed with error ${response?.status}"
+    }
+}
+def sendGetCommand(command){
+
+    def serverURI = state.clientURI + command
+
+    logging("sending $serverURI")
+
+    def requestParams =
+        [
+            uri:  serverURI,
+            requestContentType: "application/json",
+            headers:
+            [
+                Authorization: "Bearer ${state.clientToken}"
+            ],
+            timeout: 5
+        ]
+
+    try
+    {
+        asynchttpGet((enableDebug ? "asyncHTTPHandler" : null), requestParams)
+    }
+    catch (Exception e)
+    {
+        log.error "asynchttpGet() failed with error ${e.message}"
+    }
+}
+def jsonResponse(respMap){
+    render contentType: 'application/json', data: JsonOutput.toJson(respMap)
+}
+def configureRemote(){
+    def connectString = serverKey
+
+    def accessData
+    try
+    {
+        accessData = parseJson(new String(connectString.decodeBase64()))
+    }
+    catch (errorException)
+    {
+        log.error "Error reading connection key: ${errorException}."
+        responseText = "Error: Corrupt or invalid connection key"
+        state.connected = false
+        accessData = null
+    }
+    if (accessData)
+    {
+        // Set the coordinator hub details
+        state.clientURI = accessData.uri
+        state.clientToken = accessData.token
+        state.clientType = accessData.type
+        state.connectionType = accessData.connectionType
+
+        log.info """
+state.clientURI = $state.clientURI
+state.clientToken = $state.clientToken
+state.clientType = $state.clientType
+state.connectionType = $state.connectionType
+"""
+    }
+}
+def appLabel(){
+    if(state.paused)
+    {
+        log.debug "new app label: ${app.label}"
+        while(app.label.contains(" (Paused) "))
+        {
+            app.updateLabel(app.label.minus("(Paused)" ))
+        }
+        app.updateLabel(app.label + ("<font color = 'red'> (Paused) </font>" ))
+    }
+    else if(app.label.contains("(Paused)"))
+    {
+        app.updateLabel(app.label.minus("<font color = 'red'> (Paused) </font>" ))
+        while(app.label.contains(" (Paused) "))       
+        {
+            app.updateLabel(app.label.minus("(Paused)" ))
+        }
+        log.debug "new app label: ${app.label}"
+    }
+
+    if(workWithRemoteHub)
+    {
+        def appLa = "WATCHDOG"         
+        if(state.remoteResponded)
+        {
+            app.updateLabel(appLa + ("<font color = 'green'> online </font>") )
+        }
+        else 
+        {
+            app.updateLabel(appLa + ("<font color = 'red'> offline </font>") )
+        }
+
+    }
+    // appName.replaceAll(/[^0-9a-zA-Z&_]/, "") // this means replace all but those mentioned in [] 
+    //app.updateLabel("${appName.replaceAll(" ", "")}" + " " + "${isConnected ? '<span style=\"color:green\"> Online</span>' : '<span style=\"color:red\"> Offline</span>'}")
+    /*
+String bad = "AVE  14 DE JULHO N�130";
+String badPattern = "[^a-zA-Z0-9 ]"; // anything not a good character
+String good = bad.replaceAll(badPattern, " ");
+*/
+}
 def logging(msg){
     def debug = settings.find{it.key == "enablelogging"}?.value
-    //log.warn "debug = $debug"
     if (debug) log.debug msg
     if(debug && state.EnableDebugTime == null) state.EnableDebugTime = now()
+
+}
+def descriptiontext(msg){
+    def debug = settings.find{it.key == "enabledescriptiontext"}?.value
+    if (debug) log.info msg
 
 }
 def disablelogging(){
     app.updateSetting("enablelogging",[value:"false",type:"bool"])
     log.warn "logging disabled!"
 }
+def getConnectString() {remoteType ? new groovy.json.JsonBuilder([uri: (remoteType == "local" || remoteType == "homebridge") ? getFullLocalApiServerUrl() : getFullApiServerUrl(), type: remoteType, token: state.accessToken, connectionType: localConnectionType ?: ""]).toString().bytes.encodeBase64() : ""}
+def menuHeader(titleText){"<div style=\"width:102%;background-color:#696969;color:white;padding:4px;font-weight: bold;box-shadow: 1px 2px 2px #bababa;margin-left: -10px\">${titleText}</div>"}
