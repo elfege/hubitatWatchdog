@@ -277,7 +277,6 @@ def master(String data){
             runIn(10, checkResult)
         }
         appLabel()
-
     }
 
 
