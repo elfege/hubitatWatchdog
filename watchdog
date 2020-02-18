@@ -222,8 +222,8 @@ def initialize() {
     state.remoteResponded = true
     state.pingInterval = 60000 // default
     state.lastCheckIn = now()
-    state.rebootScheduled = false
     state.attempts = 0
+    state.cronPositive = 0
 
     state.timer = 1
     schedule("0 0/${state.timer} * * * ?", cronMaster) 
@@ -262,15 +262,10 @@ def cronMaster(){
     master("cronMaster")
 }
 def master(String data){
-    if(data == "cronMaster")
+    if(data == "cronMaster" && state.cronPositive != 0)
     {
-        descriptiontext("everything ok..")
-        if(state.rebootScheduled == true)
-        {
-            unschedule(reboot)
-            descriptiontext("reboot canceled!")
-            state.rebootScheduled = false
-        }
+        log.warn("FALSE POSITIVE, reboot canceled!")
+        state.cronPositive = 0
     }
 
     if(workWithRemoteHub)
@@ -286,7 +281,7 @@ def master(String data){
     }
 
 
-    descriptiontext("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
+    logging("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
 
     if(location.mode in restrictedModes)
     {
@@ -298,20 +293,32 @@ def master(String data){
         long d = t * 60000 + 30000 // allow up to n millis delay for cron to execute
         if(now() - state.lastRun > d) // if this loop hasn't run for more than the timer's value, then it's probably that CRON is broken
         {
-            log.warn "CRON SERVICE IS NOT WORKING!*** Current time: ${new Date().format("h:mm:ss a", location.timeZone)} last sched run: ${state.lastRunStamp}" 
+            log.warn "CRON SERVICE IS NOT WORKING! #$state.cronPositive Current time: ${new Date().format("h:mm:ss a", location.timeZone)} last sched run: ${state.lastRunStamp}" 
+            state.cronPositive += 1
 
             if(now() - state.lastReboot > 15 * 60 * 1000)
             {
-                log.warn "*******************REBOOT **************"
-                state.rebootScheduled = true
-                runIn(15, reboot)
+                if(state.cronPositive > 3)
+                {
+                    log.warn "*******************REBOOT **************"
+
+                    reboot()
+                }
             }
             else 
             {
                 log.warn "LAST REBOOT WAS NOT SO LONG AGO, SKIPPING"
-                state.rebootScheduled = false
+                state.cronPositive = 0
             }
 
+        }
+        else 
+        {
+            if(state.cronPositive != 0)
+            {
+                log.warn "FALSE CRON FAILLURE ALARM"
+                state.cronPositive = 0
+            }
         }
     }
 
@@ -336,7 +343,7 @@ def checkResult(){
         state.attempts = 0
         if(state.pingInterval != 60000)
         {
-        state.pingInterval = 60000 // reset ping interval
+            state.pingInterval = 60000 // reset ping interval
         }
     }
     else 
@@ -357,7 +364,7 @@ def rebootRemoteHub(){
     unschedule()
     unsubscribe() // temporarily stop all instances to allow for the remote hub to start responding again
     state.paused = true // next ping received from other hub will switch back this boolean
-    runIn(240, updated) // ping supposed to do that, but in case it missfires or other hub doesn't come back online... 
+    runIn(300, updated) // ping supposed to do that, but in case it missfires or other hub doesn't come back online... 
     runIn(1, appLabel) // refresh label accordingly
 }
 def runCmd(String ip,String port,String path) {
@@ -466,45 +473,37 @@ state.connectionType = $state.connectionType
     }
 }
 def appLabel(){
-    if(state.paused)
-    {
-        log.debug "new app label: ${app.label}"
-        while(app.label.contains(" (Paused) "))
-        {
-            app.updateLabel(app.label.minus("(Paused)" ))
-        }
-        app.updateLabel(app.label + ("<font color = 'red'> (Paused) </font>" ))
-    }
-    else if(app.label.contains("(Paused)"))
-    {
-        app.updateLabel(app.label.minus("<font color = 'red'> (Paused) </font>" ))
-        while(app.label.contains(" (Paused) "))       
-        {
-            app.updateLabel(app.label.minus("(Paused)" ))
-        }
-        log.debug "new app label: ${app.label}"
-    }
+
+    def appLa = "WATCHDOG"  
 
     if(workWithRemoteHub)
     {
-        def appLa = "WATCHDOG"         
+
         if(state.remoteResponded)
         {
-            app.updateLabel(appLa + ("<font color = 'green'> online </font>") )
+            appLa = appLa + ("<font color = 'red'> online </font>")
+            app.updateLabel(appLa)
         }
         else 
         {
-            app.updateLabel(appLa + ("<font color = 'red'> offline </font>") )
+            appLa = appLa + ("<font color = 'red'> offline </font>")
+            app.updateLabel(appLa)
         }
 
     }
+
+    if(state.paused)
+    {
+        log.debug "new app label: ${app.label}"
+        app.updateLabel(appLa + ("<font color = 'red'> (PAUSED) </font>") )
+    }
+
+
+
     // appName.replaceAll(/[^0-9a-zA-Z&_]/, "") // replace all non standard chars
     //app.updateLabel("${appName.replaceAll(" ", "")}" + " " + "${isConnected ? '<span style=\"color:green\"> Online</span>' : '<span style=\"color:red\"> Offline</span>'}")
-    /*
-String bad = "AVE  14 DE JULHO N�130";
-String badPattern = "[^a-zA-Z0-9 ]"; // anything not a good character
-String good = bad.replaceAll(badPattern, " ");
-*/
+
+
 }
 def logging(msg){
     def debug = settings.find{it.key == "enablelogging"}?.value
