@@ -283,8 +283,8 @@ def master(String data){
 
     }
 
-             
-   descriptiontext("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
+
+    descriptiontext("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
 
     if(location.mode in restrictedModes)
     {
@@ -293,20 +293,10 @@ def master(String data){
     else 
     {
         long t = state.timer
-        long d = t * 60000 + 60000
+        long d = t * 60000 + 30000 // allow up to n millis delay for cron to execute
         if(now() - state.lastRun > d) // if this loop hasn't run for more than the timer's value, then it's probably that CRON is broken
         {
-             log.warn """CRON SERVICE DEAD!
-
-
-
-The current time is                     ${new Date().format("h:mm:ss a", location.timeZone)}
-last scheduled task was run at ${state.lastRunStamp}
-
-
-
-
-""" 
+            log.warn "CRON SERVICE IS NOT WORKING!*** Current time: ${new Date().format("h:mm:ss a", location.timeZone)} last sched run: ${state.lastRunStamp}" 
 
             if(now() - state.lastReboot > 15 * 60 * 1000)
             {
@@ -321,8 +311,6 @@ last scheduled task was run at ${state.lastRunStamp}
             }
 
         }
-
-
         if(enabledebug && now() - state.EnableDebugTime > 1800000)
         {
             log.info "Debug has been up for too long..."
@@ -332,21 +320,25 @@ last scheduled task was run at ${state.lastRunStamp}
 
 }
 def checkResult(){
-
-    if(state.hubResponded == false && state.firstAttempt == true)
+    descriptiontext("checking if remote hub responded")
+    if(state.remoteResponded == false && state.firstAttempt == true)
     {
         log.warn "${clientName} failed to respond!"
         state.firstAttempt = false
-        runIn(60, remoteServerHealth)
+        runIn(30, remoteServerHealth) // prevent false alarm
     }
-    else if(state.hubResponded == false && state.firstAttempt == false)
+    else if(state.remoteResponded == false && state.firstAttempt == false)
     {
         rebootRemoteHub()
     }
-    else if(state.hubResponded == true)
+    else if(state.remoteResponded == true)
     {
-        log.warn "${clientName} SCCESSFULLY RESPONDED!"
+        descriptiontext("CONNECTION TO ${clientName} IS HEALTHY")
         state.firstAttempt = true
+    }
+    else 
+    {
+        log.error "Something went wrong, could not resolve reboot conditions..."
     }
 
 }
@@ -355,8 +347,15 @@ def reboot(){
     runCmd("${ip}", "8080", "/hub/reboot")// reboot
 }
 def rebootRemoteHub(){
-    log.debug "REBOOTING ${clientName}"
+    log.warn "----------------- REBOOTING ${clientName} ---------------------- "
     runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
+
+    // pause this app 
+    unschedule()
+    unsubscribe() // temporarily stop all instances to allow for the remote hub to start responding again
+    state.paused = true // next ping received from other hub will switch back this boolean
+    runIn(240, updated) // ping supposed to do that, but in case it missfires or other hub doesn't come back online... 
+    runIn(1, appLabel) // refresh label accordingly
 }
 def runCmd(String ip,String port,String path) {
 
@@ -375,12 +374,17 @@ def runCmd(String ip,String port,String path) {
     }
 }
 def remoteServerHealth(){
-    state.hubResponded = false
+    descriptiontext("Remote Server Health Check")
+    state.remoteResponded = false
     sendGetCommand("/ping")
 
 }
 def registerPing(){
     descriptiontext("Received ping from ${clientName}.")
+    if(state.paused){
+        state.paused = false // other hub is done rebooting, resuming this app
+        updated() // will unschedule previously scheduled updated() and restart this app
+    }
     runIn(2, sendConfirmation)
 
     jsonResponse([status: "received"])
@@ -491,7 +495,7 @@ def appLabel(){
         }
 
     }
-    // appName.replaceAll(/[^0-9a-zA-Z&_]/, "") // this means replace all but those mentioned in [] 
+    // appName.replaceAll(/[^0-9a-zA-Z&_]/, "") // replace all non standard chars
     //app.updateLabel("${appName.replaceAll(" ", "")}" + " " + "${isConnected ? '<span style=\"color:green\"> Online</span>' : '<span style=\"color:red\"> Offline</span>'}")
     /*
 String bad = "AVE  14 DE JULHO N�130";
