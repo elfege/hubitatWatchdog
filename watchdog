@@ -77,28 +77,26 @@ def pageConfig() {
             label title:"Assign a name", required:false
         }
 
-        section("Select motion sensors to trigger watchdog events")
+        section(menuHeader("Method 1: Motion Sensors Trigger - this is the basic method"))
         { 
             input "motionSensors", "capability.motionSensor", title: "Choose your motion sensors", despcription: "pick a motion sensor", required:true,
                 multiple:true, submitOnChange: true
             input "ip", "text", title: "IP ADDRESS OF YOUR HUB", despcription: "enter your ip address without 'http://'", required:true
         }
-        section("More triggers")
+        section(menuHeader("Method 2: Virtual Switch trigger - this method provides better reactivity"))
         {
-         input "swt", "capability.switch", title: """(optional) Select a switch that can be toggled frequently without damage nor annoyance to you
-            (you may want to use a virtual switch for this)""", required:false, submitOnChange:true
+            input "swt", "capability.switch", title: "(optional) Select a control virtual switch",description:"Select a VIRTUAL switch", required:false, submitOnChange:true
             if(swt)
             {
                 paragraph "This app will monitor the reaction time between the cmd and the event declaration to check your hub's reactivity."
             }
         }
-        section("REMOTE HUB")
+        section(menuHeader("Method 3: Local Remote Hub Trigger - this method is great for those whom use a second hub"))
         {
             input "workWithRemoteHub", "bool", title: "watch a remote hub on your network", defaultValue: false, submitOnChange: true
             if(workWithRemoteHub)
             {
-                href "connectPage", title: "get this server token key (server)", description: "", state: state.clientURI ? "complete" : null
-                input "serverKey", "string", title: "Paste the connection key you've got from the other hub's version of this app, here:", required: false
+                href "connectPage", title: "Configure IP and Token Key", description: "", state: state.clientURI ? "complete" : null
             }
         }
 
@@ -132,22 +130,35 @@ def connectPage(){
         createAccessToken()
     }
 
-    def connectString = getConnectString()
+    state.remoteType = "local"
+    state.localConnectionType = http
+
     dynamicPage(name: "connectPage", uninstall: false, install: false)
     {
+        section()
+        {
+            paragraph "<h2> Make sure to enable the same settings on your other hub, using the same app </h2>"
+        }
+
         section("Client Details")
         {
-            input "clientName", "string", title: "Friendly Name of Client Hub:", required: false, defaultValue: null, submitOnChange: true
-            if (clientName) input "clientIP", "string", title: "Private LAN IP Address of Client Hub:", required: false, defaultValue: null, submitOnChange: true
-            if (clientIP) input "remoteType", "enum", title: "Type of Remote Hub:", options: [local: "Hubitat (LAN)", remote: "Hubitat (Internet)", homebridge: "HomeBridge", smartthings: "SmartThings"], required: false, defaultValue: null, submitOnChange: true
-            if (remoteType == "local" || remoteType == "homebridge") input "localConnectionType", "enum", title: "Local connect type:", options: [http: "Hubitat oAuth (http)", socket: "Hubitat Event Socket"], required: false, defaultValue: null, submitOnChange: true
-            if (clientIP && state.connectStatus == "online") input "updateDeviceIPs", "bool", title: "Update child devices with new IP address?", defaultValue: false
+            input "clientName", "string", title: "Friendly Name of Remote Client:", required: false, defaultValue: null, submitOnChange: true
+            if (clientName) input "clientIP", "string", title: "Private LAN IP Address of Remote Client:", required: false, defaultValue: null, submitOnChange: true
         }
-        if (remoteType)
+        if (clientIP)
         {
             section("Connection Key")
             {
-                paragraph("${remoteType == "local" || remoteType == "homebridge" ? "Local LAN Hub:" : "Internet Hub:"} Copy &amp; Paste this Connection Key into the Remote hub's configuration:<textarea rows=\"3\" style=\"width:80%; font-family:Consolas,Monaco,Lucida Console,Liberation Mono,DejaVu Sans Mono,Bitstream Vera Sans Mono,Courier New, monospace;\" onclick=\"this.select()\" onclick=\"this.focus()\">${connectString}</textarea>")
+
+
+                paragraph("Copy and Paste this Connection Key into the Remote hub's configuration:<textarea rows=\"3\" style=\"width:80%; font-family:Consolas,Monaco,Lucida Console,Liberation Mono,DejaVu Sans Mono,Bitstream Vera Sans Mono,Courier New, monospace;\" onclick=\"this.select()\" onclick=\"this.focus()\">${getConnectString()}</textarea>")
+
+
+            }
+
+            section("connection key")
+            {   
+                input "serverKey", "string", title: "Paste here the connection key you've gotten from the other hub's instance of this app:", required: true
             }
         }
     }
@@ -227,7 +238,7 @@ def initialize() {
         subscribe(motionSensors[i], "motion", mainHandler)
         log.trace "${motionSensors[i]} subscribed to events"
     }
-    
+
     if(swt)
     {
         subscribe(swt, "switch", switchHandler)
@@ -259,13 +270,13 @@ def locationModeChangeHandler(evt){
 def switchHandler(evt)
 {
     log.info "$evt.device is $evt.value"
-    
+
     //return 
-    
+
     def timeTolerance = 2000
     def falseAlarmThreshold = 5
     state.swtEvent = now() 
-    
+
     if(state.swtAttempt >= falseAlarmThreshold)
     {
         log.warn "SYSTEM IS SLOW! REBOOTING..."
@@ -334,14 +345,14 @@ def master(String data){
         appLabel()
 
     }
-    
+
     if(swt && now() - state.swtCmd > 3*60*1000)
     {
         descriptiontext("Testing Hub's Responsiveness..")
         state.swtCmd = now()
         (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
     }
-        
+
 
 
     logging("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
@@ -394,7 +405,7 @@ def reboot(){
 }
 def rebootRemoteHub(){
     log.warn "----------------- REBOOTING ${clientName} ---------------------- "
-    runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
+    //runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
 
     // pause this app 
     unschedule()
@@ -422,7 +433,7 @@ def runCmd(String ip,String port,String path) {
 def remoteServerHealth(){
     descriptiontext("Remote Server Health Check")
     state.remoteResponded = false
-    
+
     logging "state.otherHubIsRebooting = $state.otherHubIsRebooting"
     def message = state.otherHubIsRebooting ? ("ping activity suspended because  ${clientName} is rebooting") : ("") //{sendGetCommand("/ping")}
     if(message){log.warn (message)}
@@ -573,13 +584,6 @@ def appLabel(){
         log.debug "new app label: ${app.label}"
         app.updateLabel(appLa + ("<font color = 'red'> (PAUSED) </font>") )
     }
-
-
-
-    // appName.replaceAll(/[^0-9a-zA-Z&_]/, "") // replace all non standard chars
-    //app.updateLabel("${appName.replaceAll(" ", "")}" + " " + "${isConnected ? '<span style=\"color:green\"> Online</span>' : '<span style=\"color:red\"> Offline</span>'}")
-
-
 }
 def logging(msg){
     def debug = settings.find{it.key == "enablelogging"}?.value
@@ -596,5 +600,5 @@ def disablelogging(){
     app.updateSetting("enablelogging",[value:"false",type:"bool"])
     log.warn "logging disabled!"
 }
-def getConnectString() {remoteType ? new groovy.json.JsonBuilder([uri: (remoteType == "local" || remoteType == "homebridge") ? getFullLocalApiServerUrl() : getFullApiServerUrl(), type: remoteType, token: state.accessToken, connectionType: localConnectionType ?: ""]).toString().bytes.encodeBase64() : ""}
-def menuHeader(titleText){"<div style=\"width:102%;background-color:#696969;color:white;padding:4px;font-weight: bold;box-shadow: 1px 2px 2px #bababa;margin-left: -10px\">${titleText}</div>"}
+def getConnectString() {new groovy.json.JsonBuilder([uri: getFullLocalApiServerUrl(), type: state.remoteType, token: state.accessToken, connectionType: state.localConnectionType]).toString().bytes.encodeBase64()}
+def menuHeader(titleText){"<div style=\"width:102%;background-color:#1C2BB7;color:white;padding:4px;font-weight: bold;box-shadow: 1px 2px 2px #bababa;margin-left: -10px\">${titleText}</div>"}
