@@ -29,6 +29,10 @@ mappings{
     {
         action: [GET: "confirmationReceived"]
     }
+    path("/rebooting")
+    {
+        action: [GET: "registerReboot"]
+    }
 
 }
 def pageConfig() {
@@ -78,6 +82,15 @@ def pageConfig() {
             input "motionSensors", "capability.motionSensor", title: "Choose your motion sensors", despcription: "pick a motion sensor", required:true,
                 multiple:true, submitOnChange: true
             input "ip", "text", title: "IP ADDRESS OF YOUR HUB", despcription: "enter your ip address without 'http://'", required:true
+        }
+        section("More triggers")
+        {
+         input "swt", "capability.switch", title: """(optional) Select a switch that can be toggled frequently without damage nor annoyance to you
+            (you may want to use a virtual switch for this)""", required:false, submitOnChange:true
+            if(swt)
+            {
+                paragraph "This app will monitor the reaction time between the cmd and the event declaration to check your hub's reactivity."
+            }
         }
         section("REMOTE HUB")
         {
@@ -214,6 +227,13 @@ def initialize() {
         subscribe(motionSensors[i], "motion", mainHandler)
         log.trace "${motionSensors[i]} subscribed to events"
     }
+    
+    if(swt)
+    {
+        subscribe(swt, "switch", switchHandler)
+        state.swtEvent = now() 
+        state.swtCmd = now()
+    }
 
     configureRemote()
 
@@ -224,6 +244,8 @@ def initialize() {
     state.lastCheckIn = now()
     state.attempts = 0
     state.cronPositive = 0
+    state.swtAttempt = 0
+    state.otherHubIsRebooting = false
 
     state.timer = 1
     schedule("0 0/${state.timer} * * * ?", cronMaster) 
@@ -233,6 +255,38 @@ def initialize() {
 }
 def locationModeChangeHandler(evt){
     logging("$evt.name is now in $evt.value mode")   
+}
+def switchHandler(evt)
+{
+    log.info "$evt.device is $evt.value"
+    
+    //return 
+    
+    def timeTolerance = 2000
+    def falseAlarmThreshold = 5
+    state.swtEvent = now() 
+    
+    if(state.swtAttempt >= falseAlarmThreshold)
+    {
+        log.warn "SYSTEM IS SLOW! REBOOTING..."
+        state.swtAttempt = 0
+        reboot()
+        return
+    }
+    if(now() - state.swtCmd > timeTolerance)
+    //if(1==1)
+    {
+        log.warn "HUB TOOK ${(now() - state.swtCmd)/1000} seconds TO RESPOND TO CMD attempt #${state.swtAttempt}"
+        state.swtAttempt += 1
+        // run a new test
+        state.swtCmd = now()
+        (evt.value == "off") ? swt.on() : swt.off()
+    }
+    else 
+    {
+        descriptiontext("System response is ${(now() - state.swtCmd)/1000} seconds")
+        state.swtAttempt = 0
+    }
 }
 def mainHandler(evt){    
     //log.info "${evt.name}: $evt.device is $evt.value --------------------"
@@ -255,6 +309,7 @@ def hubEventHandler(evt){
     log.warn "Hub has just restarted! ${app.label} will resume in 2 minutes..."
     state.lastReboot = now()
     runIn(120, updated) // restart this app 2 minutes after complete reboot
+    state.otherHubIsRebooting = false
 }
 def cronMaster(){
     state.lastRun = now() // time stamp to see if cron service is working properly
@@ -277,7 +332,16 @@ def master(String data){
             runIn(10, checkResult)
         }
         appLabel()
+
     }
+    
+    if(swt && now() - state.swtCmd > 3*60*1000)
+    {
+        descriptiontext("Testing Hub's Responsiveness..")
+        state.swtCmd = now()
+        (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
+    }
+        
 
 
     logging("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
@@ -322,37 +386,10 @@ def master(String data){
     }
 
 }
-def checkResult(){
-    descriptiontext("checking if remote hub responded")
-    if(state.remoteResponded == false && state.attempts < 5)// prevent false alarm
-    {
-        log.warn "${clientName} failed to respond! attempt #$state.attempts"
-        state.attempts += 1
-        state.pingInterval = 3000 // set shorter ping interval 
-        runIn(30, remoteServerHealth) 
-    }
-    else if(state.remoteResponded == false && state.attempts >= 5)
-    {
-        rebootRemoteHub()
-    }
-    else if(state.remoteResponded == true)
-    {
-        if(state.attempts != 0){log.warn "FALSE ALARM, resuming normal operations"}
-        descriptiontext("CONNECTION TO ${clientName} IS HEALTHY")
-        state.attempts = 0
-        if(state.pingInterval != 60000)
-        {
-            state.pingInterval = 60000 // reset ping interval
-        }
-    }
-    else 
-    {
-        log.error "Something went wrong, could not resolve reboot conditions..."
-    }
 
-}
 def reboot(){
     log.warn "NOW REBOOTING THE HUB"
+    if(workWithRemoteHub){sendGetCommand("/rebooting")}
     runCmd("${ip}", "8080", "/hub/reboot")// reboot
 }
 def rebootRemoteHub(){
@@ -385,7 +422,11 @@ def runCmd(String ip,String port,String path) {
 def remoteServerHealth(){
     descriptiontext("Remote Server Health Check")
     state.remoteResponded = false
-    sendGetCommand("/ping")
+    
+    logging "state.otherHubIsRebooting = $state.otherHubIsRebooting"
+    def message = state.otherHubIsRebooting ? ("ping activity suspended because  ${clientName} is rebooting") : ("") //{sendGetCommand("/ping")}
+    if(message){log.warn (message)}
+    if(!state.otherHubIsRebooting){sendGetCommand("/ping")}
 
 }
 def registerPing(){
@@ -398,18 +439,43 @@ def registerPing(){
 
     jsonResponse([status: "received"])
 }
+def checkResult(){
+    descriptiontext("checking if remote hub responded")
+    if(state.remoteResponded == false && state.attempts < 5)// prevent false alarm
+    {
+        log.warn "${clientName} failed to respond! attempt #$state.attempts"
+        state.attempts += 1
+        state.pingInterval = 3000 // set shorter ping interval 
+        runIn(30, remoteServerHealth) 
+    }
+    else if(state.remoteResponded == false && state.attempts >= 5)
+    {
+        rebootRemoteHub()
+    }
+    else if(state.remoteResponded == true)
+    {
+        if(state.attempts != 0){log.warn "FALSE ALARM, resuming normal operations"}
+        descriptiontext("CONNECTION TO ${clientName} IS HEALTHY")
+        state.attempts = 0
+        if(state.pingInterval != 60000)
+        {
+            state.pingInterval = 60000 // reset ping interval
+        }
+    }
+    else 
+    {
+        log.error "Something went wrong, could not resolve reboot conditions..."
+    }
+
+}
+def registerReboot()
+{
+    log.warn "OTHER HUB is rebooting on its own, stopping all ping activities"
+    state.otherHubIsRebooting = true
+    state.paused = true
+}
 def sendConfirmation(){
     sendGetCommand("/confirmReception")
-}
-def confirmationReceived(){
-    descriptiontext("${clientName} is online")
-    state.remoteResponded = true
-}
-def asyncHTTPHandler(response, data){
-    if (response?.status != 200)
-    {
-        log.error "asynchttpGet() request failed with error ${response?.status}"
-    }
 }
 def sendGetCommand(command){
 
@@ -437,6 +503,17 @@ def sendGetCommand(command){
         log.error "asynchttpGet() failed with error ${e.message}"
     }
 }
+def confirmationReceived(){
+    descriptiontext("${clientName} is online")
+    state.remoteResponded = true
+}
+def asyncHTTPHandler(response, data){
+    if (response?.status != 200)
+    {
+        log.error "asynchttpGet() request failed with error ${response?.status}"
+    }
+}
+
 def jsonResponse(respMap){
     render contentType: 'application/json', data: JsonOutput.toJson(respMap)
 }
