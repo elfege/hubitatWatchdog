@@ -563,27 +563,15 @@ def appLabel(){
 
     def appLa = "WATCHDOG"  
 
+    appLa = state.paused ? appLa + ("<font color = 'red'> paused </font>") : appLa
+   
     if(workWithRemoteHub)
     {
-
-        if(state.remoteResponded)
-        {
-            appLa = appLa + ("<font color = 'red'> online </font>")
-            app.updateLabel(appLa)
-        }
-        else 
-        {
-            appLa = appLa + ("<font color = 'red'> offline </font>")
-            app.updateLabel(appLa)
-        }
-
+    appLa = state.remoteResponded ? appLa + ("<font color = 'red'> online </font>"):appLa + ("<font color = 'red'> offline </font>")  
+    appLa = state.otherHubIsRebooting ? appLa + ("<font color = 'red'> $clientName rebooting </font>") : appLa
     }
-
-    if(state.paused)
-    {
-        log.debug "new app label: ${app.label}"
-        app.updateLabel(appLa + ("<font color = 'red'> (PAUSED) </font>") )
-    }
+    logging("new app label: ${app.label}")
+    app.updateLabel(appLa)
 }
 def logging(msg){
     def debug = settings.find{it.key == "enablelogging"}?.value
