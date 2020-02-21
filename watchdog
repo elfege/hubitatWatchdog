@@ -405,7 +405,7 @@ def reboot(){
 }
 def rebootRemoteHub(){
     log.warn "----------------- REBOOTING ${clientName} ---------------------- "
-    //runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
+    runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
 
     // pause this app 
     unschedule()
