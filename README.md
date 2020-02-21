@@ -1,5 +1,9 @@
 # hubitatWatchdog
 
-This app runs using a couple motion sensors of your choice, preferably the ones that are most frequently triggered in your home, so to detect when schedule / cron services are down, which happens usually at the same moment than when your hub becomes unresponsive, and for the same causes (gridlocked database). When it detects such a low performance of your hub, it reboots it. 
+This app runs using 3 optional methods: 
 
-This app can also ping another instance of the same app on a remote hub on your local network (local only) and reboot the remote hub if it detects that it didn't respond within false alarm threshold delay
+1) A routine runs based on both scheduling (1minute) and motion sensor events. If, upon a motion event, the routine detects that the last scheduled execution is past due by 30 seconds, a warning process is triggered and, if confirmed several times, then it means that CRON scheduling service is no longer responding on your hub, which is a frequent symptom of an unresponsive hub. Hub will then reboot. 
+
+2) A virtual switch is turned on, then the app measures the time it takes for the hub to parse the switch event. If within false alarm threshold the hub remains slow to respond, the hub is rebooted. 
+
+3) If you install this app on 2 Hubitat hubs, they can ping each other. If one becomes unresponsive for two long, it will receive a remote reboot command. (works only if your hub doesn't require ID and password for now)
