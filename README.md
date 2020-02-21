@@ -1,6 +1,6 @@
 # hubitatWatchdog
 
-This app runs using 3 optional methods: 
+This app runs using 3 methods (2 and 3 being optional): 
 
 1) A routine runs based on both scheduling (1minute) and motion sensor events. If, upon a motion event, the routine detects that the last scheduled execution is past due by 30 seconds, a warning process is triggered and, if confirmed several times, then it means that CRON scheduling service is no longer responding on your hub, which is a frequent symptom of an unresponsive hub. Hub will then reboot. 
 
