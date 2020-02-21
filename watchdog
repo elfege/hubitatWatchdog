@@ -73,9 +73,6 @@ def pageConfig() {
         {
             input "restricted", "mode", title: "Do not run this app when in these modes:", description:"select modes", multiple:true, required:false
         }
-        section([title:"Options"]) {
-            label title:"Assign a name", required:false
-        }
 
         section(menuHeader("Method 1: Motion Sensors Trigger - this is the basic method"))
         { 
@@ -107,6 +104,7 @@ def pageConfig() {
         }
         section()
         {
+            input "userLabel", "text", title: "Rename this app", submitOnChange: true, required: false
             if(state.installed)
             {
                 input "update", "button", title: "UPDATE"
@@ -267,8 +265,7 @@ def initialize() {
 def locationModeChangeHandler(evt){
     logging("$evt.name is now in $evt.value mode")   
 }
-def switchHandler(evt)
-{
+def switchHandler(evt){
     log.info "$evt.device is $evt.value"
 
     //return 
@@ -479,8 +476,7 @@ def checkResult(){
     }
 
 }
-def registerReboot()
-{
+def registerReboot(){
     log.warn "OTHER HUB is rebooting on its own, stopping all ping activities"
     state.otherHubIsRebooting = true
     state.paused = true
@@ -561,7 +557,7 @@ state.connectionType = $state.connectionType
 }
 def appLabel(){
 
-    def appLa = "WATCHDOG"  
+    def appLa = userLabel ? userLabel : "CSP WATCHDOG"  
 
     appLa = state.paused ? appLa + ("<font color = 'red'> paused </font>") : appLa
    
