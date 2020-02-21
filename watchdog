@@ -3,7 +3,7 @@ import groovy.transform.Field
 import groovy.json.JsonOutput
 
 definition(
-    name: "WATCHDOG",
+    name: "Hubitat CSP Watchdog",
     namespace: "elfege",
     author: "ELFEGE",
 
@@ -23,7 +23,7 @@ mappings{
     // Server Mappings
     path("/ping")
     {
-        action: [GET: "registerPing"]
+        action: [GET: "parsePing"]
     }
     path("/confirmReception")
     {
@@ -429,7 +429,7 @@ def remoteServerHealth(){
     if(!state.otherHubIsRebooting){sendGetCommand("/ping")}
 
 }
-def registerPing(){
+def parsePing(){
     descriptiontext("Received ping from ${clientName}.")
     if(state.paused){
         state.paused = false // other hub is done rebooting, resuming this app
