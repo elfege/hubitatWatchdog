@@ -216,6 +216,8 @@ def updated() {
     initialize()
 }
 def initialize() {
+    state.paused = false 
+    
     if(enablelogging == true){
         state.EnableDebugTime = now()
         runIn(1800, disablelogging)
@@ -240,7 +242,7 @@ def initialize() {
     if(swt)
     {
         subscribe(swt, "switch", switchHandler)
-        state.swtEvent = now() 
+        state.lastSwtEvent = now() 
         state.swtCmd = now()
     }
 
@@ -269,10 +271,12 @@ def switchHandler(evt){
     log.info "$evt.device is $evt.value"
 
     //return 
+    
+    state.swtEventOk = true
 
     def timeTolerance = 2000
     def falseAlarmThreshold = 5
-    state.swtEvent = now() 
+    state.lastSwtEvent = now() // remember when last event was registered
 
     if(state.swtAttempt >= falseAlarmThreshold)
     {
@@ -282,7 +286,6 @@ def switchHandler(evt){
         return
     }
     if(now() - state.swtCmd > timeTolerance)
-    //if(1==1)
     {
         log.warn "HUB TOOK ${(now() - state.swtCmd)/1000} seconds TO RESPOND TO CMD attempt #${state.swtAttempt}"
         state.swtAttempt += 1
@@ -338,17 +341,25 @@ def master(String data){
             state.lastCheckIn = now()
             remoteServerHealth()
             runIn(10, checkResult)
+
+            runIn(1, appLabel)
         }
-        appLabel()
 
     }
 
-    if(swt && now() - state.swtCmd > 3*60*1000)
+    if(swt && now() - state.swtCmd > 30000)
     {
-        descriptiontext("Testing Hub's Responsiveness..")
+        if(state.swtEventOk == false && now() - state.lastSwtEvent > 60000)
+        {
+            log.warn "Hub is no longer responding to events! REBOOTING"
+            reboot()
+        }
+        descriptiontext("Testing Hub's Responsiveness by triggering $swt")
         state.swtCmd = now()
         (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
+        state.swtEventOk = false
     }
+    
 
 
 
@@ -560,11 +571,11 @@ def appLabel(){
     def appLa = userLabel ? userLabel : "CSP WATCHDOG"  
 
     appLa = state.paused ? appLa + ("<font color = 'red'> paused </font>") : appLa
-   
+
     if(workWithRemoteHub)
     {
-    appLa = state.remoteResponded ? appLa + ("<font color = 'red'> online </font>"):appLa + ("<font color = 'red'> offline </font>")  
-    appLa = state.otherHubIsRebooting ? appLa + ("<font color = 'red'> $clientName rebooting </font>") : appLa
+        appLa = state.remoteResponded ? appLa + ("<font color = 'red'> online </font>"):appLa + ("<font color = 'red'> offline </font>")  
+        appLa = state.otherHubIsRebooting ? appLa + ("<font color = 'red'> $clientName rebooting </font>") : appLa
     }
     logging("new app label: ${app.label}")
     app.updateLabel(appLa)
