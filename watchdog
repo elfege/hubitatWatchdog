@@ -217,7 +217,9 @@ def updated() {
 }
 def initialize() {
     state.paused = false 
-    
+    state.pausedRemoteReboot = false
+    state.remoteRebootTime = now()
+
     if(enablelogging == true){
         state.EnableDebugTime = now()
         runIn(1800, disablelogging)
@@ -271,7 +273,7 @@ def switchHandler(evt){
     log.info "$evt.device is $evt.value"
 
     //return 
-    
+
     state.swtEventOk = true
 
     def timeTolerance = 2000
@@ -328,78 +330,94 @@ def cronMaster(){
     master("cronMaster")
 }
 def master(String data){
-    if(data == "cronMaster" && state.cronPositive != 0)
-    {
-        log.warn("FALSE POSITIVE, reboot canceled!")
-        state.cronPositive = 0
-    }
 
-    if(workWithRemoteHub)
+    if(state.paused)
     {
-        if(now() - state.lastCheckIn > state.pingInterval)
+        if(state.pausedRemoteReboot)
         {
-            state.lastCheckIn = now()
-            remoteServerHealth()
-            runIn(10, checkResult)
-
-            runIn(1, appLabel)
+            log.info "app paused due to remote reboot procedure. It will resume in a couple minutes, be patient"
         }
-
-    }
-
-    if(swt && now() - state.swtCmd > 30000)
-    {
-        if(state.swtEventOk == false && now() - state.lastSwtEvent > 60000)
+        else
         {
-            log.warn "Hub is no longer responding to events! REBOOTING"
-            reboot()
+            log.info "app paused"
         }
-        descriptiontext("Testing Hub's Responsiveness by triggering $swt")
-        state.swtCmd = now()
-        (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
-        state.swtEventOk = false
-    }
-    
-
-
-
-    logging("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
-
-    if(location.mode in restrictedModes)
-    {
-        log.info("location in restricted mode, doing nothing")
     }
     else 
     {
-        long t = state.timer
-        long d = t * 60000 + 30000 // allow up to n millis delay for cron to execute
-        if(now() - state.lastRun > d) // if this loop hasn't run for more than the timer's value, then it's probably that CRON is broken
+
+        if(data == "cronMaster" && state.cronPositive != 0)
         {
-            log.warn "CRON SERVICE IS NOT WORKING! #$state.cronPositive Current time: ${new Date().format("h:mm:ss a", location.timeZone)} last sched run: ${state.lastRunStamp}" 
-            state.cronPositive += 1
+            log.warn("FALSE POSITIVE, reboot canceled!")
+            state.cronPositive = 0
+        }
 
-            if(now() - state.lastReboot > 15 * 60 * 1000)
+        if(workWithRemoteHub)
+        {
+            if(now() - state.lastCheckIn > state.pingInterval)
             {
-                if(state.cronPositive > 3)
-                {
-                    log.warn "*******************REBOOT **************"
+                state.lastCheckIn = now()
+                remoteServerHealth()
+                runIn(10, checkResult)
 
-                    reboot()
-                }
-            }
-            else 
-            {
-                log.warn "LAST REBOOT WAS NOT SO LONG AGO, SKIPPING"
-                state.cronPositive = 0
+                appLabel()
             }
 
         }
+
+        if(swt && now() - state.swtCmd > 30000)
+        {
+            if(state.swtEventOk == false && now() - state.lastSwtEvent > 60000)
+            {
+                log.warn "Hub is not responding to events any longer! REBOOTING"
+                reboot()
+            }
+            descriptiontext("Testing Hub's Responsiveness by triggering $swt")
+            state.swtCmd = now()
+            (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
+            state.swtEventOk = false
+        }
+
+
+
+
+        logging("***${new Date().format("h:mm:ss a", location.timeZone)}**** Origin: $data")
+
+        if(location.mode in restrictedModes)
+        {
+            log.info("location in restricted mode, doing nothing")
+        }
         else 
         {
-            if(state.cronPositive != 0)
+            long t = state.timer
+            long d = t * 60000 + 30000 // allow up to n millis delay for cron to execute
+            if(now() - state.lastRun > d) // if this loop hasn't run for more than the timer's value, then it's probably that CRON is broken
             {
-                log.warn "FALSE CRON FAILLURE ALARM"
-                state.cronPositive = 0
+                log.warn "CRON SERVICE IS NOT WORKING! #$state.cronPositive Current time: ${new Date().format("h:mm:ss a", location.timeZone)} last sched run: ${state.lastRunStamp}" 
+                state.cronPositive += 1
+
+                if(now() - state.lastReboot > 15 * 60 * 1000)
+                {
+                    if(state.cronPositive > 3)
+                    {
+                        log.warn "*******************REBOOT **************"
+
+                        reboot()
+                    }
+                }
+                else 
+                {
+                    log.warn "LAST REBOOT WAS NOT SO LONG AGO, SKIPPING"
+                    state.cronPositive = 0
+                }
+
+            }
+            else 
+            {
+                if(state.cronPositive != 0)
+                {
+                    log.warn "FALSE CRON FAILLURE ALARM"
+                    state.cronPositive = 0
+                }
             }
         }
     }
@@ -418,8 +436,9 @@ def rebootRemoteHub(){
     // pause this app 
     unschedule()
     unsubscribe() // temporarily stop all instances to allow for the remote hub to start responding again
-    state.paused = true // next ping received from other hub will switch back this boolean
-    runIn(300, updated) // ping supposed to do that, but in case it missfires or other hub doesn't come back online... 
+    state.pausedRemoteReboot = true // next ping received from other hub will switch back this boolean
+    state.paused = true
+    runIn(300, updated) // resume this app in a couple minutes to leave time for the other hub to reboot 
     runIn(1, appLabel) // refresh label accordingly
 }
 def runCmd(String ip,String port,String path) {
@@ -449,13 +468,20 @@ def remoteServerHealth(){
 
 }
 def parsePing(){
-    descriptiontext("Received ping from ${clientName}.")
-    if(state.paused){
-        state.paused = false // other hub is done rebooting, resuming this app
-        updated() // will unschedule previously scheduled updated() and restart this app
+    if(state.paused && !state.pausedRemoteReboot)
+    {
+        log.info "ping activity paused"
     }
+    else 
+    {
+        descriptiontext("Received ping from ${clientName}.")
+        if(state.pausedRemoteReboot){
+            // receiving ping from other hub so it is done rebooting, resuming this app
+            updated()
+        }
+    }
+    // still need to send confirmation to not crash the other hub
     runIn(2, sendConfirmation)
-
     jsonResponse([status: "received"])
 }
 def checkResult(){
