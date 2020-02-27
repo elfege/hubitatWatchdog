@@ -216,7 +216,7 @@ def updated() {
     initialize()
 }
 def initialize() {
-    state.paused = false 
+    state.paused = false
     state.pausedRemoteReboot = false
     state.remoteRebootTime = now()
 
@@ -258,7 +258,6 @@ def initialize() {
     state.attempts = 0
     state.cronPositive = 0
     state.swtAttempt = 0
-    state.otherHubIsRebooting = false
 
     state.timer = 1
     schedule("0 0/${state.timer} * * * ?", cronMaster) 
@@ -322,7 +321,7 @@ def hubEventHandler(evt){
     log.warn "Hub has just restarted! ${app.label} will resume in 2 minutes..."
     state.lastReboot = now()
     runIn(120, updated) // restart this app 2 minutes after complete reboot
-    state.otherHubIsRebooting = false
+    state.pausedRemoteReboot = false
 }
 def cronMaster(){
     state.lastRun = now() // time stamp to see if cron service is working properly
@@ -340,6 +339,7 @@ def master(String data){
         else
         {
             log.info "app paused"
+            runIn(1800, updated)
         }
     }
     else 
@@ -461,10 +461,10 @@ def remoteServerHealth(){
     descriptiontext("Remote Server Health Check")
     state.remoteResponded = false
 
-    logging "state.otherHubIsRebooting = $state.otherHubIsRebooting"
-    def message = state.otherHubIsRebooting ? ("ping activity suspended because  ${clientName} is rebooting") : ("") //{sendGetCommand("/ping")}
+    logging "state.pausedRemoteReboot = $state.pausedRemoteReboot"
+    def message = state.pausedRemoteReboot ? ("ping activity suspended because  ${clientName} is rebooting") : ("") //{sendGetCommand("/ping")}
     if(message){log.warn (message)}
-    if(!state.otherHubIsRebooting){sendGetCommand("/ping")}
+    if(!state.pausedRemoteReboot){sendGetCommand("/ping")}
 
 }
 def parsePing(){
@@ -515,7 +515,7 @@ def checkResult(){
 }
 def registerReboot(){
     log.warn "OTHER HUB is rebooting on its own, stopping all ping activities"
-    state.otherHubIsRebooting = true
+    state.pausedRemoteReboot = true
     state.paused = true
 }
 def sendConfirmation(){
@@ -601,7 +601,7 @@ def appLabel(){
     if(workWithRemoteHub)
     {
         appLa = state.remoteResponded ? appLa + ("<font color = 'red'> online </font>"):appLa + ("<font color = 'red'> offline </font>")  
-        appLa = state.otherHubIsRebooting ? appLa + ("<font color = 'red'> $clientName rebooting </font>") : appLa
+        appLa = state.pausedRemoteReboot ? appLa + ("<font color = 'red'> $clientName rebooting </font>") : appLa
     }
     logging("new app label: ${app.label}")
     app.updateLabel(appLa)
