@@ -219,6 +219,7 @@ def initialize() {
     state.paused = false
     state.pausedRemoteReboot = false
     state.remoteRebootTime = now()
+    state.lastLabelTime = now()
 
     if(enablelogging == true){
         state.EnableDebugTime = now()
@@ -358,8 +359,8 @@ def master(String data){
                 state.lastCheckIn = now()
                 remoteServerHealth()
                 runIn(10, checkResult)
-
-                appLabel()
+                
+                if(now() - state.lastLabelTime > 120000) {appLabel()}
             }
 
         }
@@ -439,7 +440,6 @@ def rebootRemoteHub(){
     state.pausedRemoteReboot = true // next ping received from other hub will switch back this boolean
     state.paused = true
     runIn(300, updated) // resume this app in a couple minutes to leave time for the other hub to reboot 
-    runIn(1, appLabel) // refresh label accordingly
 }
 def runCmd(String ip,String port,String path) {
 
@@ -551,6 +551,7 @@ def confirmationReceived(){
     descriptiontext("${clientName} is online")
     state.remoteResponded = true
 }
+
 def asyncHTTPHandler(response, data){
     if (response?.status != 200)
     {
@@ -593,7 +594,7 @@ state.connectionType = $state.connectionType
     }
 }
 def appLabel(){
-
+    state.lastLabelTime = now()
     def appLa = userLabel ? userLabel : "CSP WATCHDOG"  
 
     appLa = state.paused ? appLa + ("<font color = 'red'> paused </font>") : appLa
