@@ -220,6 +220,7 @@ def initialize() {
     state.pausedRemoteReboot = false
     state.remoteRebootTime = now()
     state.lastLabelTime = now()
+    state.swtEvt = 0
 
     if(enablelogging == true){
         state.EnableDebugTime = now()
@@ -272,9 +273,8 @@ def locationModeChangeHandler(evt){
 def switchHandler(evt){
     log.info "$evt.device is $evt.value"
 
-    //return 
 
-    state.swtEventOk = true
+    state.swtEvt = 0 // reset this value to 0 so the app knows that hub is responsive to events (boolean is an insufficient method here after a fresh reboot)
 
     def timeTolerance = 2000
     def falseAlarmThreshold = 5
@@ -359,23 +359,26 @@ def master(String data){
                 state.lastCheckIn = now()
                 remoteServerHealth()
                 runIn(10, checkResult)
-                
-                if(now() - state.lastLabelTime > 120000) {appLabel()}
+
+                if(now() - state.lastLabelTime > 120000 || state.remoteResponded == true) 
+                {
+                    appLabel()
+                }
             }
 
         }
 
         if(swt && now() - state.swtCmd > 30000)
         {
-            if(state.swtEventOk == false && now() - state.lastSwtEvent > 60000)
+            if(state.swtEvt > 2 && now() - state.lastSwtEvent > 60000)
             {
-                log.warn "Hub is not responding to events any longer! REBOOTING"
+                log.warn "Hub is no longer responding to events! REBOOTING"
                 reboot()
             }
             descriptiontext("Testing Hub's Responsiveness by triggering $swt")
             state.swtCmd = now()
             (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
-            state.swtEventOk = false
+            state.swtEvt += 1
         }
 
 
