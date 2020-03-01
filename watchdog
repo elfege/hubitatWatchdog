@@ -278,7 +278,7 @@ def switchHandler(evt){
     def elapsed = (now() - state.swtCmd) / 1000 // elapsed time converted into seconds
     def falseAlarmThreshold = 5 // max number of times the elapsed time can be beyond timeTolerance
     def absoluteLimit = 20 // (in seconds) too much of a delay is not acceptable so if this limit is passed...
-    // bring false alarm threshold down 
+    //... then bring false alarm threshold down 
     if(elapsed >= absoluteLimit) {
         // if it happens a second time that it took far too long, then reboot the hub
         falseAlarmThreshold = 1
@@ -450,11 +450,11 @@ appLabel()
 def reboot(){
     log.warn "NOW REBOOTING THE HUB"
     if(workWithRemoteHub){sendGetCommand("/rebooting")}
-    //runCmd("${ip}", "8080", "/hub/reboot")// reboot
+    runCmd("${ip}", "8080", "/hub/reboot")// reboot
 }
 def rebootRemoteHub(){
     log.warn "----------------- REBOOTING ${clientName} ---------------------- "
-    //runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
+    runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
 
     // pause this app 
     unschedule()
