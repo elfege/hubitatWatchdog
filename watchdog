@@ -2,6 +2,10 @@ import java.text.SimpleDateFormat
 import groovy.transform.Field
 import groovy.json.JsonOutput
 
+@Field static remoteResponded = true
+
+
+
 definition(
     name: "Hubitat CSP Watchdog",
     namespace: "elfege",
@@ -108,16 +112,9 @@ def pageConfig() {
             if(state.installed)
             {
                 input "update", "button", title: "UPDATE"
-                input "test", "button", title: "test"
+                if(swt) {input "test", "button", title: "toggle $swt"}
                 input "run", "button", title: "RUN"
-                input "pingtest", "button", title: "PING TEST"
-
-                if(state.confirm)
-                {
-                    paragraph "WARNING! THIS WILL ACTUALLY REBOOT YOUR HUB! Are you sure?"
-                    input "YES", "button", title: "YES", submitOnChange: true
-                    input "CANCEL", "button", title: "NO", submitOnChange: true
-                }
+                if(workWithRemoteHub) {input "pingtest", "button", title: "PING TEST"}
             }
         }
     }
@@ -183,7 +180,8 @@ def appButtonHandler(btn) {
         updated()
         break
         case "test":
-        state.confirm = true
+        state.swtCmd = now()
+        swt.currentValue("switch") == "on" ? swt.off() : swt.on()
         break
         case "YES":
         runIn(3, reboot)
@@ -193,7 +191,7 @@ def appButtonHandler(btn) {
         state.confirm = false
         break
         case "pingtest":
-        runIn(1, remoteServerHealth)
+        remoteServerHealth()
         break
         case "run":
         master("testrun")
@@ -254,7 +252,7 @@ def initialize() {
 
     subscribe(location, "systemStart", hubEventHandler) // manage bugs and hub crashes
 
-    state.remoteResponded = true
+    //state.remoteResponded = true // using static instead
     state.pingInterval = 60000 // default
     state.lastCheckIn = now()
     state.attempts = 0
@@ -276,18 +274,40 @@ def switchHandler(evt){
 
     state.swtEvt = 0 // reset this value to 0 so the app knows that hub is responsive to events (boolean is an insufficient method here after a fresh reboot)
 
-    def timeTolerance = 2000
-    def falseAlarmThreshold = 5
+    def timeTolerance = 2*1000
+    def elapsed = (now() - state.swtCmd) / 1000 // elapsed time converted into seconds
+    def falseAlarmThreshold = 5 // max number of times the elapsed time can be beyond timeTolerance
+    def absoluteLimit = 20 // (in seconds) too much of a delay is not acceptable so if this limit is passed...
+    // bring false alarm threshold down 
+    if(elapsed >= absoluteLimit) {
+        // if it happens a second time that it took far too long, then reboot the hub
+        falseAlarmThreshold = 1
+        log.warn "HUB IS GETTING SLOW bringing falseAlarmThreshold down to $falseAlarmThreshold" 
+    } 
+    else
+    {
+        descriptiontext "elapsed time is below critical"
+    }
     state.lastSwtEvent = now() // remember when last event was registered
 
-    if(state.swtAttempt >= falseAlarmThreshold)
+    logging """
+timeTolerance = ${timeTolerance/1000} seconds
+elapsed time between cmd and evt = $elapsed seconds
+absoluteLimit = $absoluteLimit
+falseAlarmThreshold = falseAlarmThreshold attempts
+"""
+    if(state.swtAttempt >= falseAlarmThreshold) 
     {
-        log.warn "SYSTEM IS SLOW! REBOOTING..."
+        log.warn """
+THIS HUB IS TOO SLOW! REBOOTING...
+state.swtAttempt = $state.swtAttempt
+elapsed = $elapsed (absoluteLimit is $absoluteLimit)
+"""
         state.swtAttempt = 0
         reboot()
         return
     }
-    if(now() - state.swtCmd > timeTolerance)
+    if(elapsed > timeTolerance && elapsed < absoluteLimit)
     {
         log.warn "HUB TOOK ${(now() - state.swtCmd)/1000} seconds TO RESPOND TO CMD attempt #${state.swtAttempt}"
         state.swtAttempt += 1
@@ -297,7 +317,7 @@ def switchHandler(evt){
     }
     else 
     {
-        descriptiontext("System response is ${(now() - state.swtCmd)/1000} seconds")
+        descriptiontext("Local Hub Response time to a Switch Command is within acceptable parameter (${elapsed} seconds)")
         state.swtAttempt = 0
     }
 }
@@ -354,18 +374,18 @@ def master(String data){
 
         if(workWithRemoteHub)
         {
+            logging "state.pingInterval = $state.pingInterval"
             if(now() - state.lastCheckIn > state.pingInterval)
             {
                 state.lastCheckIn = now()
                 remoteServerHealth()
-                runIn(10, checkResult)
+                runIn(2, checkResult)
 
-                if(now() - state.lastLabelTime > 120000 || state.remoteResponded == true) 
-                {
-                    appLabel()
-                }
+                /*if(now() - state.lastLabelTime > 120000 || remoteResponded == false) 
+{
+appLabel()
+}*/
             }
-
         }
 
         if(swt && now() - state.swtCmd > 30000)
@@ -425,17 +445,16 @@ def master(String data){
             }
         }
     }
-
 }
 
 def reboot(){
     log.warn "NOW REBOOTING THE HUB"
     if(workWithRemoteHub){sendGetCommand("/rebooting")}
-    runCmd("${ip}", "8080", "/hub/reboot")// reboot
+    //runCmd("${ip}", "8080", "/hub/reboot")// reboot
 }
 def rebootRemoteHub(){
     log.warn "----------------- REBOOTING ${clientName} ---------------------- "
-    runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
+    //runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
 
     // pause this app 
     unschedule()
@@ -462,7 +481,7 @@ def runCmd(String ip,String port,String path) {
 }
 def remoteServerHealth(){
     descriptiontext("Remote Server Health Check")
-    state.remoteResponded = false
+    remoteResponded = false
 
     logging "state.pausedRemoteReboot = $state.pausedRemoteReboot"
     def message = state.pausedRemoteReboot ? ("ping activity suspended because  ${clientName} is rebooting") : ("") //{sendGetCommand("/ping")}
@@ -470,7 +489,7 @@ def remoteServerHealth(){
     if(!state.pausedRemoteReboot){sendGetCommand("/ping")}
 
 }
-def parsePing(){
+def parsePing(){ // receive ping from remote server
     if(state.paused && !state.pausedRemoteReboot)
     {
         log.info "ping activity paused"
@@ -483,27 +502,32 @@ def parsePing(){
             updated()
         }
     }
-    // still need to send confirmation to not crash the other hub
-    runIn(2, sendConfirmation)
+    // send confirmation to the remote hub 
+    sendConfirmation()
     jsonResponse([status: "received"])
 }
 def checkResult(){
     descriptiontext("checking if remote hub responded")
-    if(state.remoteResponded == false && state.attempts < 5)// prevent false alarm
+    int repeat = 3
+    logging """
+remoteResponded = $remoteResponded 
+state.attempts = $state.attempts
+repeat = $repeat
+"""
+    if(remoteResponded == false && state.attempts < repeat)// prevent false alarm 
     {
-        log.warn "${clientName} failed to respond! attempt #$state.attempts"
+        if(state.attempts != 0) {log.warn "${clientName} failed to respond! attempt #$state.attempts"} //by delcaring faillure only as of 2 failed attempts
         state.attempts += 1
         state.pingInterval = 3000 // set shorter ping interval 
         runIn(30, remoteServerHealth) 
     }
-    else if(state.remoteResponded == false && state.attempts >= 5)
+    else if(remoteResponded == false && state.attempts >= repeat)
     {
         rebootRemoteHub()
     }
-    else if(state.remoteResponded == true)
+    else if(remoteResponded == true)
     {
         if(state.attempts != 0){log.warn "FALSE ALARM, resuming normal operations"}
-        descriptiontext("CONNECTION TO ${clientName} IS HEALTHY")
         state.attempts = 0
         if(state.pingInterval != 60000)
         {
@@ -514,7 +538,6 @@ def checkResult(){
     {
         log.error "Something went wrong, could not resolve reboot conditions..."
     }
-
 }
 def registerReboot(){
     log.warn "OTHER HUB is rebooting on its own, stopping all ping activities"
@@ -551,8 +574,18 @@ def sendGetCommand(command){
     }
 }
 def confirmationReceived(){
-    descriptiontext("${clientName} is online")
-    state.remoteResponded = true
+
+    remoteResponded = true
+    if(state.attempts != 0){
+        log.warn "FALSE ALARM ${clientName} is online"
+    } else {
+        descriptiontext"CONNECTION TO ${clientName} IS HEALTHY"
+        logging "state.attempts RESET"
+    }
+    // declare false alarm only if 2 attempts were already made 
+
+    state.attempts = 0
+    runIn(1, appLabel)
 }
 
 def asyncHTTPHandler(response, data){
@@ -604,7 +637,7 @@ def appLabel(){
 
     if(workWithRemoteHub)
     {
-        appLa = state.remoteResponded ? appLa + ("<font color = 'red'> online </font>"):appLa + ("<font color = 'red'> offline </font>")  
+        appLa = remoteResponded ? appLa + ("<font color = 'red'> online </font>"):appLa + ("<font color = 'red'> offline </font>")  
         appLa = state.pausedRemoteReboot ? appLa + ("<font color = 'red'> $clientName rebooting </font>") : appLa
     }
     logging("new app label: ${app.label}")
