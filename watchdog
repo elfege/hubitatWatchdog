@@ -41,9 +41,7 @@ mappings{
 }
 def pageConfig() {
 
-
     appLabel()
-
 
     def pageProperties = [
         name:       "pageConfig",
@@ -109,12 +107,36 @@ def pageConfig() {
         section()
         {
             input "userLabel", "text", title: "Rename this app", submitOnChange: true, required: false
+
             if(state.installed)
-            {
+            {  
+
+                if(state.noReboot == null || state.noReboot == "null"){state.noReboot = false}
                 input "update", "button", title: "UPDATE"
-                if(swt) {input "test", "button", title: "toggle $swt"}
+                input "noreboot", "button", title: "${state.noReboot ? "Enable Reboot" : "Disable Reboot"}"
+                if(state.noReboot){
+                    paragraph "<div style=\"width:102%;background-color:#1C2BB7;color:red;padding:4px;font-weight: bold;box-shadow: 1px 2px 2px #bababa;margin-left: -10px\">${state.messageReboot}</div>"
+                }
+                else 
+                { 
+                    paragraph ""
+                }
+                input "reboot", "button", title: "REBOOT $location"
+                if(swt) {
+                    input "test", "button", title: "toggle $swt"
+                }
                 input "run", "button", title: "RUN"
-                if(workWithRemoteHub) {input "pingtest", "button", title: "PING TEST"}
+                if(workWithRemoteHub) {
+                    input "pingtest", "button", title: "PING TEST"
+                    input "rebootRemoteHub", "button", title: "Reboot ${clientName} (remote hub)"
+                    if(state.noReboot){
+                        paragraph "<div style=\"width:102%;background-color:#1C2BB7;color:red;padding:4px;font-weight: bold;box-shadow: 1px 2px 2px #bababa;margin-left: -10px\">${state.messageReboot}</div>"
+                    }
+                    else 
+                    {
+                        paragraph ""
+                    }
+                }
             }
         }
     }
@@ -183,8 +205,28 @@ def appButtonHandler(btn) {
         state.swtCmd = now()
         swt.currentValue("switch") == "on" ? swt.off() : swt.on()
         break
-        case "YES":
-        runIn(3, reboot)
+        case "reboot":
+        if(state.noReboot)
+        {
+            log.warn "REBOOT WAS DISABLED BY USER"
+            state.messageReboot = "REBOOT DISABLED BY USER, COMMAND NOT SENT!"
+        }
+        else 
+        {
+            state.messageReboot = ""
+            reboot()
+        }
+        case "rebootRemoteHub":
+        if(state.noReboot)
+        {
+            log.warn "REBOOT WAS DISABLED BY USER"
+            state.messageReboot = "REBOOT DISABLED BY USER, COMMAND NOT SENT!"
+        }
+        else 
+        {
+            state.messageReboot = ""
+            rebootRemoteHub()
+        }
         state.confirm = false
         break
         case "CANCEL":
@@ -196,6 +238,20 @@ def appButtonHandler(btn) {
         case "run":
         master("testrun")
         break
+        case "noreboot":
+
+        state.noReboot = !state.noReboot
+        if(state.noReboot)
+        {
+            log.warn "REBOOT DISABLED BY USER"
+            state.messageReboot = "REBOOT DISABLED BY USER"
+        }
+        else 
+        {
+            state.messageReboot = ""
+        }
+
+        break
 
     }
 }
@@ -204,21 +260,32 @@ def installed() {
     state.fix = 0
     state.lastReboot = now()
     state.installed = true
-    initialize()
+    init()
 }
 def updated() {
     log.info "updated with settings: ${settings}"
 
     unsubscribe()
     unschedule()
-    initialize()
+    init()
 }
-def initialize() {
+
+def init() {
+    state.messageReboot = ""
     state.paused = false
     state.pausedRemoteReboot = false
     state.remoteRebootTime = now()
     state.lastLabelTime = now()
     state.swtEvt = 0
+    //state.remoteResponded = true // using static instead
+    state.pingInterval = 60000 // default
+    state.lastCheckIn = now()
+    state.attempts = 0
+    state.cronPositive = 0
+    state.swtAttempt = 0
+    state.lastRun = now() // time stamp to see if cron service is working properly
+    state.lastRunStamp = new Date().format("h:mm:ss a", location.timeZone) // formated time stamp for debug purpose
+
 
     if(enablelogging == true){
         state.EnableDebugTime = now()
@@ -252,16 +319,9 @@ def initialize() {
 
     subscribe(location, "systemStart", hubEventHandler) // manage bugs and hub crashes
 
-    //state.remoteResponded = true // using static instead
-    state.pingInterval = 60000 // default
-    state.lastCheckIn = now()
-    state.attempts = 0
-    state.cronPositive = 0
-    state.swtAttempt = 0
 
     state.timer = 1
     schedule("0 0/${state.timer} * * * ?", cronMaster) 
-    state.lastRun = now()  // time stamp to see if cron service is working properly
 
     logging("initialization done")
 }
@@ -274,15 +334,16 @@ def switchHandler(evt){
 
     state.swtEvt = 0 // reset this value to 0 so the app knows that hub is responsive to events (boolean is an insufficient method here after a fresh reboot)
 
-    def timeTolerance = 2*1000
+    def timeTolerance = 2
     def elapsed = (now() - state.swtCmd) / 1000 // elapsed time converted into seconds
     def falseAlarmThreshold = 5 // max number of times the elapsed time can be beyond timeTolerance
     def absoluteLimit = 20 // (in seconds) too much of a delay is not acceptable so if this limit is passed...
     //... then bring false alarm threshold down 
     if(elapsed >= absoluteLimit) {
         // if it happens a second time that it took far too long, then reboot the hub
-        falseAlarmThreshold = 1
-        log.warn "HUB IS GETTING SLOW bringing falseAlarmThreshold down to $falseAlarmThreshold" 
+        falseAlarmThreshold = 2
+        state.swtAttempt += 1
+        log.warn "HUB IS GETTING SLOW bringing falseAlarmThreshold down to $falseAlarmThreshold - state.swtAttempt = $state.swtAttempt" 
     } 
     else
     {
@@ -296,6 +357,22 @@ elapsed time between cmd and evt = $elapsed seconds
 absoluteLimit = $absoluteLimit
 falseAlarmThreshold = falseAlarmThreshold attempts
 """
+
+    if(elapsed > timeTolerance && elapsed < absoluteLimit)
+    {
+        log.warn "HUB TOOK ${(now() - state.swtCmd)/1000} seconds TO RESPOND TO CMD attempt #${state.swtAttempt}"
+        state.swtAttempt += 1
+        // run a new test
+        state.swtCmd = now()
+        (evt.value == "off") ? swt.on() : swt.off()
+    }
+    else  if(elapsed < timeTolerance)
+    {
+        log.warn "$elapsed < $timeTolerance -- ${elapsed < timeTolerance}"
+        descriptiontext("Local Hub Response time to a Switch Command is within acceptable parameter (${elapsed} seconds)")
+        state.swtAttempt = 0
+    }
+
     if(state.swtAttempt >= falseAlarmThreshold) 
     {
         log.warn """
@@ -306,19 +383,6 @@ elapsed = $elapsed (absoluteLimit is $absoluteLimit)
         state.swtAttempt = 0
         reboot()
         return
-    }
-    if(elapsed > timeTolerance && elapsed < absoluteLimit)
-    {
-        log.warn "HUB TOOK ${(now() - state.swtCmd)/1000} seconds TO RESPOND TO CMD attempt #${state.swtAttempt}"
-        state.swtAttempt += 1
-        // run a new test
-        state.swtCmd = now()
-        (evt.value == "off") ? swt.on() : swt.off()
-    }
-    else 
-    {
-        descriptiontext("Local Hub Response time to a Switch Command is within acceptable parameter (${elapsed} seconds)")
-        state.swtAttempt = 0
     }
 }
 def mainHandler(evt){    
@@ -388,17 +452,23 @@ appLabel()
             }
         }
 
-        if(swt && now() - state.swtCmd > 30000)
-        {
-            if(state.swtEvt > 2 && now() - state.lastSwtEvent > 60000)
-            {
-                log.warn "Hub is no longer responding to events! REBOOTING"
-                reboot()
-            }
+        if(swt) {
+            def elapsed = (now() - state.swtCmd)/1000
+            logging("elapsed time between swt cmd and execution = ${elapsed}")
             descriptiontext("Testing Hub's Responsiveness by triggering $swt")
-            state.swtCmd = now()
-            (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
-            state.swtEvt += 1
+
+            if(elapsed > 30000)
+            {
+                if(state.swtEvt > 2 && now() - state.lastSwtEvent > 60000)
+                {
+                    log.warn "Hub is no longer responding to events! REBOOTING"
+                    reboot()
+                }
+
+                state.swtCmd = now()
+                (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
+                state.swtEvt += 1
+            }
         }
 
 
@@ -450,11 +520,26 @@ appLabel()
 def reboot(){
     log.warn "NOW REBOOTING THE HUB"
     if(workWithRemoteHub){sendGetCommand("/rebooting")}
-    runCmd("${ip}", "8080", "/hub/reboot")// reboot
+    if(!state.noReboot)
+    {
+        runCmd("${ip}", "8080", "/hub/reboot")// reboot
+    }   
+    else
+    {
+        log.warn "REBOOT CMD DISABLED!"
+    }
+
 }
 def rebootRemoteHub(){
     log.warn "----------------- REBOOTING ${clientName} ---------------------- "
-    runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
+    if(!state.noReboot)
+    {
+        runCmd("${clientIP}", "8080", "/hub/reboot")// reboot
+    }
+    else
+    {
+        log.warn "REBOOT CMD DISABLED!"
+    }
 
     // pause this app 
     unschedule()
