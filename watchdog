@@ -368,7 +368,7 @@ falseAlarmThreshold = falseAlarmThreshold attempts
     }
     else  if(elapsed < timeTolerance)
     {
-        log.warn "$elapsed < $timeTolerance -- ${elapsed < timeTolerance}"
+        logging "$elapsed < $timeTolerance -- ${elapsed < timeTolerance}"
         descriptiontext("Local Hub Response time to a Switch Command is within acceptable parameter (${elapsed} seconds)")
         state.swtAttempt = 0
     }
@@ -443,30 +443,31 @@ def master(String data){
             {
                 state.lastCheckIn = now()
                 remoteServerHealth()
+                //descriptiontext("checking if remote hub responded")
                 runIn(2, checkResult)
 
-                /*if(now() - state.lastLabelTime > 120000 || remoteResponded == false) 
-{
-appLabel()
-}*/
+                if(now() - state.lastLabelTime > 120000 || remoteResponded == false) 
+                {
+                    appLabel()
+                }
             }
         }
 
         if(swt) {
-            def elapsed = (now() - state.swtCmd)/1000
+            def elapsed = now() - state.swtCmd
             logging("elapsed time between swt cmd and execution = ${elapsed}")
-            
+
 
             if(elapsed > 30000)
             {
-                
+
                 if(state.swtEvt > 2 && now() - state.lastSwtEvent > 60000)
                 {
                     log.warn "Hub is no longer responding to events! REBOOTING"
                     reboot()
                 }
-                
-                descriptiontext("Testing Hub's Responsiveness by triggering $swt")
+
+                descriptiontext("Testing Hub's Responsiveness by toggling $swt")
                 state.swtCmd = now()
                 (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
                 state.swtEvt += 1
@@ -594,7 +595,7 @@ def parsePing(){ // receive ping from remote server
     jsonResponse([status: "received"])
 }
 def checkResult(){
-    descriptiontext("checking if remote hub responded")
+
     int repeat = 3
     logging """
 remoteResponded = $remoteResponded 
