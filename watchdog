@@ -455,16 +455,18 @@ appLabel()
         if(swt) {
             def elapsed = (now() - state.swtCmd)/1000
             logging("elapsed time between swt cmd and execution = ${elapsed}")
-            descriptiontext("Testing Hub's Responsiveness by triggering $swt")
+            
 
             if(elapsed > 30000)
             {
+                
                 if(state.swtEvt > 2 && now() - state.lastSwtEvent > 60000)
                 {
                     log.warn "Hub is no longer responding to events! REBOOTING"
                     reboot()
                 }
-
+                
+                descriptiontext("Testing Hub's Responsiveness by triggering $swt")
                 state.swtCmd = now()
                 (swt.currentValue("switch") == "off") ? swt.on() : swt.off()
                 state.swtEvt += 1
