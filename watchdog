@@ -7,11 +7,12 @@ import groovy.json.JsonOutput
 
 
 definition(
-    name: "Hubitat CSP Watchdog",
+    name: "CSP Watchdog",
     namespace: "elfege",
     author: "ELFEGE",
 
-    description: "Check that cron service is running properly and, if not, then reboot the hub",
+    description: """Check that cron service is running properly and or that a switch is responding in a timely fashion
+    and/or a remote hub is responsive, if not, then reboot the hub (or the remote hub)""",
 
     category: "maintenance",
     iconUrl: "https://www.philonyc.com/assets/penrose.jpg",
@@ -160,6 +161,7 @@ def connectPage(){
         section("Client Details")
         {
             input "clientName", "string", title: "Friendly Name of Remote Client:", required: false, defaultValue: null, submitOnChange: true
+            input "repeat", "number", title: "After how many failed attempts should this app reboot the remote server?", description: "Set a value between 3 and 30", range: "3..30",defaultValue: "5"
             if (clientName) input "clientIP", "string", title: "Private LAN IP Address of Remote Client:", required: false, defaultValue: null, submitOnChange: true
         }
         if (clientIP)
@@ -596,7 +598,6 @@ def parsePing(){ // receive ping from remote server
 }
 def checkResult(){
 
-    int repeat = 3
     logging """
 remoteResponded = $remoteResponded 
 state.attempts = $state.attempts
@@ -688,6 +689,7 @@ def jsonResponse(respMap){
 }
 def configureRemote(){
     def connectString = serverKey
+    if (connectString == null) {return}
 
     def accessData
     try
